@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>BB Shows Year Filter – Final</title>
+  <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #111;
+      font-family: 'Arial', sans-serif;
+    }
+    #map {
+      position: absolute;
+      top: 50px;
+      bottom: 40px;
+      width: 100%;
+    }
+    #year-controls {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      background: #000;
+      padding: 5px 10px;
+      text-align: center;
+      overflow-x: auto;
+      white-space: nowrap;
+      z-index: 1;
+    }
+    .year-button {
+      display: inline-block;
+      background: #222;
+      color: white;
+      border: 1px solid #444;
+      margin: 2px;
+      padding: 5px 10px;
+      cursor: pointer;
+      border-radius: 4px;
+    }
+    .year-button:hover, .year-button.active {
+      background: #555;
+    }
+    #status-label {
+      position: absolute;
+      bottom: 0;
+      width: 100%;
+      text-align: center;
+      color: #ccc;
+      font-size: 14px;
+      background: rgba(0,0,0,0.8);
+      padding: 6px;
+    }
+  </style>
+</head>
+<body>
+
+<div id="year-controls"></div>
+<div id="map"></div>
+<div id="status-label">Showing: All Years</div>
+
+<script>
+  mapboxgl.accessToken = 'pk.eyJ1IjoiZW1jZWUxMjMiLCJhIjoiY2xkczRhMmZiMXRnODN4bzV3ODJqcm1zMyJ9.mxzRsIQJ43px_IXyEJn_yA';
+
+  const map = new mapboxgl.Map({
+    container: 'map',
+    style: 'mapbox://styles/mapbox/dark-v11',
+    center: [-79.38, 43.65],
+    zoom: 2
+  });
+
+  map.addControl(new mapboxgl.NavigationControl(), 'top-right');
+
+  let allData;
+  let years = [];
+
+  async function loadData() {
+    const response = await fetch('bb-shows-cleaned-runtime-fixed.json');
+    allData = await response.json();
+
+    const yearSet = new Set(allData.features.map(f => f.properties.year));
+    years = Array.from(yearSet).sort();
+
+    createYearButtons();
+    updateMap(allData);
+  }
+
+  function createYearButtons() {
+    const container = document.getElementById('year-controls');
+
+    const allBtn = document.createElement('div');
+    allBtn.className = 'year-button active';
+    allBtn.textContent = 'All';
+    allBtn.onclick = () => {
+      updateMap(allData);
+      updateActiveButton(allBtn);
+      document.getElementById('status-label').textContent = 'Showing: All Years';
+    };
+    container.appendChild(allBtn);
+
+    years.forEach(year => {
+      const btn = document.createElement('div');
+      btn.className = 'year-button';
+      btn.textContent = year;
+      btn.onclick = () => {
+        const filtered = {
+          type: 'FeatureCollection',
+          features: allData.features.filter(f => f.properties.year === year)
+        };
+        updateMap(filtered);
+        updateActiveButton(btn);
+        document.getElementById('status-label').textContent = `Showing: ${year}`;
+      };
+      container.appendChild(btn);
+    });
+  }
+
+  function updateActiveButton(activeBtn) {
+    document.querySelectorAll('.year-button').forEach(btn => {
+      btn.classList.remove('active');
+    });
+    activeBtn.classList.add('active');
+  }
+
+  function updateMap(data) {
+    if (map.getSource('shows')) {
+      map.getSource('shows').setData(data);
+      return;
+    }
+
+    map.addSource('shows', {
+      type: 'geojson',
+      data: data,
+      cluster: true,
+      clusterMaxZoom: 14,
+      clusterRadius: 50
+    });
+
+    map.addLayer({
+      id: 'clusters',
+      type: 'circle',
+      source: 'shows',
+      filter: ['has', 'point_count'],
+      paint: {
+        'circle-color': [
+          'step', ['get', 'point_count'],
+          '#51bbd6', 10,
+          '#f1f075', 20,
+          '#f28cb1', 75,
+          '#ac41bf'
+        ],
+        'circle-radius': [
+          'step', ['get', 'point_count'],
+          5, 2,
+          12, 10,
+          17, 20,
+          25, 50,
+          32, 100,
+          40
+        ],
+        'circle-opacity': 0.8
+      }
+    });
+
+    map.addLayer({
+      id: 'cluster-count',
+      type: 'symbol',
+      source: 'shows',
+      filter: ['has', 'point_count'],
+      layout: {
+        'text-field': ['get', 'point_count'],
+        'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
+        'text-size': 12
+      },
+      paint: {
+        'text-color': '#ffffff',
+        'text-halo-color': '#000000',
+        'text-halo-width': 1
+      }
+    });
+
+    map.addLayer({
+      id: 'unclustered-point',
+      type: 'circle',
+      source: 'shows',
+      filter: ['!', ['has', 'point_count']],
+      paint: {
+        'circle-color': '#ffffff',
+        'circle-radius': 4,
+        'circle-opacity': 0.8
+      }
+    });
+
+    bindPopupEvents();
+  }
+
+  function bindPopupEvents() {
+    map.on('click', 'unclustered-point', (e) => {
+      const f = e.features[0];
+      const html = `
+        <strong>${f.properties.title || 'Unknown Show'}</strong><br/>
+        ${f.properties.venue || ''} — ${f.properties.city || ''}<br/>
+        ${f.properties.date || ''}
+      `;
+      new mapboxgl.Popup()
+        .setLngLat(f.geometry.coordinates)
+        .setHTML(html)
+        .addTo(map);
+    });
+
+    map.on('click', 'clusters', (e) => {
+      const features = map.queryRenderedFeatures(e.point, { layers: ['clusters'] });
+      const clusterId = features[0].properties.cluster_id;
+      const source = map.getSource('shows');
+
+      source.getClusterLeaves(clusterId, 100, 0, (err, leaves) => {
+        if (err) return;
+
+        const seen = new Set();
+        const unique = leaves.filter(f => {
+          const key = f.properties.title + f.properties.date;
+          return seen.has(key) ? false : seen.add(key);
+        });
+
+        const content = unique.map(f => `
+          <div style="margin-bottom:4px;">
+            <strong>${f.properties.title}</strong><br/>
+            ${f.properties.venue || ''} — ${f.properties.city || ''}<br/>
+            ${f.properties.date}
+          </div>
+        `).join('<hr style="border-color:#333;">');
+
+        new mapboxgl.Popup({ maxWidth: "300px" })
+          .setLngLat(features[0].geometry.coordinates)
+          .setHTML(`<div style="max-height:200px; overflow-y:auto;">${content}</div>`)
+          .addTo(map);
+      });
+    });
+
+    map.on('mouseenter', 'clusters', () => {
+      map.getCanvas().style.cursor = 'pointer';
+    });
+    map.on('mouseleave', 'clusters', () => {
+      map.getCanvas().style.cursor = '';
+    });
+
+    map.on('mouseenter', 'unclustered-point', () => {
+      map.getCanvas().style.cursor = 'pointer';
+    });
+    map.on('mouseleave', 'unclustered-point', () => {
+      map.getCanvas().style.cursor = '';
+    });
+  }
+
+  map.on('load', loadData);
+</script>
+
+</body>
+</html>
